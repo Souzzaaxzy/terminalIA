@@ -268,7 +268,29 @@
       return box;
     }
 
-    message("sys", null, "Conectado. Envie uma mensagem para começar.");
+    // ---------------- Histórico persistente ----------------
+    // O servidor guarda a conversa em disco; recarregamos a página e ela continua.
+    async function loadHistory(){
+      try{
+        const r = await fetch("/api/history", {headers: authHeaders(), cache:"no-store"});
+        if(!r.ok) return;
+        const d = await r.json();
+        const past = d.history || [];
+        if(!past.length){
+          message("sys", null, "Conectado. Envie uma mensagem para começar.");
+          return;
+        }
+        const sep = document.createElement("div");
+        sep.className = "msg sys";
+        const sb = document.createElement("div");
+        sb.className = "body";
+        sb.textContent = "conversa restaurada · " + (d.facts && d.facts.length ? d.facts.length + " memória(s)" : "sem memória salva");
+        sep.appendChild(sb);
+        wrap.appendChild(sep);
+        past.forEach((m)=>message(m.role === "user" ? "user" : "assistant", m.role === "user" ? "Você" : "terminalIA", m.content));
+      }catch(e){ /* silencioso: começa vazio */ }
+    }
+    loadHistory();
 
     // ---------------- Envio ----------------
     async function ask(){
@@ -276,7 +298,6 @@
       if(!text || send.disabled) return;
       input.value = ""; input.style.height = "auto";
       message("user", "Você", text);
-      history.push({role:"user", content:text});
       send.disabled = true; send.textContent = "…";
 
       const pending = message("assistant", "terminalIA", "Pensando…");
@@ -284,7 +305,7 @@
         const r = await fetch("/api/chat", {
           method:"POST",
           headers: Object.assign({"Content-Type":"application/json"}, authHeaders()),
-          body: JSON.stringify({messages: history})
+          body: JSON.stringify({message: text})
         });
         if(r.status === 401){ showLogin("Sessão expirada. Entre novamente."); throw new Error("não autorizado"); }
         if(!r.ok){ throw new Error("HTTP " + r.status); }
@@ -301,12 +322,9 @@
         body.className = "body"; body.textContent = d.reply || "(resposta vazia)";
         msg.appendChild(body);
         wrap.appendChild(msg);
-
-        history.push({role:"assistant", content: d.reply || ""});
       }catch(e){
         pending.remove();
         message("err", "Erro", "Falha ao consultar o agente: " + e.message);
-        history.pop();
       }finally{
         send.disabled = false; send.textContent = "Enviar"; input.focus();
         stream.scrollTop = stream.scrollHeight;

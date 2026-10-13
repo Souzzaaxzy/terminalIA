@@ -7,11 +7,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK_DIR:-$(dirname "$ROOT")}"          # diretorio de trabalho (fora do repo)
 LLAMA_DIR="${LLAMA_DIR:-$WORK/llama.cpp}"
 MODELS_DIR="${MODELS_DIR:-$WORK/models}"
-# Modelo padrao: Dolphin 3.0 Llama 3.1 8B (uncensored por finetune, bom em codigo
-# e tool calling). Para voltar ao Llama 3.2 3B Uncensored, defina MODEL_QUANT e
-# aponte MODEL_URL/MODEL_FILE para o repo lemuralabs.
-MODEL_FILE="${MODEL_FILE:-$MODELS_DIR/dolphin3-8b-Q4_K_M.gguf}"
-MODEL_URL="${MODEL_URL:-https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf}"
+# Modelo padrao: Qwen3 14B abliterated (uncensored, o mais capaz que cabe em
+# ~15 GB de RAM). Precisa de ~9.5 GB de RAM. Alternativas mais leves:
+#   MODEL_FILE=$MODELS_DIR/dolphin3-8b-Q4_K_M.gguf  (~6 GB RAM)
+MODEL_FILE="${MODEL_FILE:-$MODELS_DIR/qwen3-14b-abliterated-Q4_K_M.gguf}"
+MODEL_URL="${MODEL_URL:-https://huggingface.co/bartowski/huihui-ai_Qwen3-14B-abliterated-GGUF/resolve/main/huihui-ai_Qwen3-14B-abliterated-Q4_K_M.gguf}"
 
 PORT="${PORT:-12000}"
 LLAMA_PORT="${LLAMA_PORT:-8080}"

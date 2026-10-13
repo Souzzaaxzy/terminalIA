@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 
@@ -42,6 +43,68 @@ WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", os.path.dirname(STATIC_DIR))
 AGENT_HOME = os.path.join(WORKSPACE_ROOT, "agent_home")
 AGENT_FILES = os.path.join(AGENT_HOME, "files")
 os.makedirs(AGENT_FILES, exist_ok=True)
+
+# Memoria persistente: fatos lembrados + historico da conversa.
+# Fica em disco, sobrevive a reload da pagina e a reinicio dos servicos.
+MEMORY_FILE = os.path.join(AGENT_HOME, "memory.json")
+HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "30"))  # mensagens mantidas
+_mem_lock = threading.Lock()
+
+
+def _load_memory() -> dict:
+    try:
+        with open(MEMORY_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError
+        data.setdefault("facts", [])
+        data.setdefault("history", [])
+        return data
+    except (OSError, ValueError):
+        return {"facts": [], "history": []}
+
+
+def _save_memory(mem: dict) -> None:
+    tmp = MEMORY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(mem, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, MEMORY_FILE)
+
+
+def _remember(fact: str) -> dict:
+    fact = (fact or "").strip()
+    if not fact:
+        return {"ok": False, "error": "fato vazio"}
+    with _mem_lock:
+        mem = _load_memory()
+        if fact not in mem["facts"]:
+            mem["facts"].append(fact)
+            mem["facts"] = mem["facts"][-200:]  # limite de seguranca
+            _save_memory(mem)
+    return {"ok": True, "info": f"lembrado: {fact}"}
+
+
+def _forget(fragment: str) -> dict:
+    fragment = (fragment or "").strip().lower()
+    if not fragment:
+        return {"ok": False, "error": "texto vazio"}
+    with _mem_lock:
+        mem = _load_memory()
+        before = len(mem["facts"])
+        mem["facts"] = [f for f in mem["facts"] if fragment not in f.lower()]
+        removed = before - len(mem["facts"])
+        if removed:
+            _save_memory(mem)
+    return {"ok": True, "info": f"esquecidos {removed} fato(s)"}
+
+
+def _memory_prompt() -> str:
+    """Bloco de memoria injetado no system prompt."""
+    mem = _load_memory()
+    if not mem["facts"]:
+        return ""
+    facts = "\n".join(f"- {f}" for f in mem["facts"])
+    return f"\n\nMEMORIA (fatos que voce deve lembrar e usar):\n{facts}\n"
 
 # Instrui o modelo a usar as ferramentas do agente.
 # A saida e restringida por JSON schema (decodificacao guiada), o que torna o
@@ -67,7 +130,13 @@ Voce responde SEMPRE com um objeto JSON. Escolha uma acao:
 6) "list" -> lista arquivos do workspace (path opcional)
    {"action":"list","path":"."}
 
-7) "reply" -> conversa normal
+7) "remember" -> guarda um fato na memoria permanente (nome, preferencias, etc.)
+   {"action":"remember","text":"o usuario se chama Joao e prefere respostas curtas"}
+
+8) "forget" -> esquece um fato que contenha o texto informado
+   {"action":"forget","text":"prefere respostas curtas"}
+
+9) "reply" -> conversa normal
    {"action":"reply","text":"sua resposta"}
 
 Regras:
@@ -76,6 +145,8 @@ Regras:
   cowsay, numpy, lodash), chame "pip" (python) ou "npm" (node) PRIMEIRO, em uma
   resposta separada, e so depois use "run". Nunca assuma que o pacote ja existe.
 - Use "write"/"read"/"list" para criar e manipular arquivos do workspace.
+- Use "remember" sempre que o usuario pedir para memorizar algo ou informar um dado
+  pessoal importante. A memoria e permanente e voce a recebe automaticamente depois.
 - Nao invente resultados: execute e use a saida real. Uma acao por resposta.
 - "lang" deve ser "python", "javascript" ou "nodejs".
 - Responda no idioma do usuario, de forma direta e curta."""
@@ -84,7 +155,7 @@ Regras:
 TOOL_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["run", "pip", "npm", "write", "read", "list", "reply"]},
+        "action": {"type": "string", "enum": ["run", "pip", "npm", "write", "read", "list", "remember", "forget", "reply"]},
         "lang": {"type": "string", "enum": ["python", "javascript", "nodejs"]},
         "code": {"type": "string"},
         "packages": {"type": "string"},
@@ -178,19 +249,53 @@ def _llama_chat(messages: list, max_tokens: int, temperature: float) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _save_turn(user_text: str, reply_text: str) -> None:
+    """Persiste o par usuario/assistente no historico em disco."""
+    with _mem_lock:
+        mem = _load_memory()
+        mem["history"].append({"role": "user", "content": user_text})
+        mem["history"].append({"role": "assistant", "content": reply_text})
+        mem["history"] = mem["history"][-HISTORY_LIMIT:]
+        _save_memory(mem)
+
+
+@app.get("/api/history")
+async def get_history():
+    mem = _load_memory()
+    return {"history": mem["history"], "facts": mem["facts"]}
+
+
+@app.post("/api/reset")
+async def reset_history():
+    with _mem_lock:
+        mem = _load_memory()
+        mem["history"] = []
+        _save_memory(mem)
+    return {"ok": True}
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()
-    messages = body.get("messages") or []
-    if not isinstance(messages, list) or not messages:
-        return JSONResponse({"error": "campo 'messages' ausente ou invalido"}, status_code=400)
+    # Aceita {message: "..."} (padrao) ou {messages: [...]} (compatibilidade).
+    user_text = body.get("message")
+    if user_text is None:
+        messages = body.get("messages") or []
+        if isinstance(messages, list) and messages:
+            user_text = messages[-1].get("content", "")
+    if not isinstance(user_text, str) or not user_text.strip():
+        return JSONResponse({"error": "campo 'message' ausente ou invalido"}, status_code=400)
 
     max_tokens = int(body.get("max_tokens", 512))
     temperature = float(body.get("temperature", 0.7))
     max_steps = min(int(body.get("max_steps", 4)), 8)
     loop = asyncio.get_running_loop()
 
-    convo = [{"role": "system", "content": SYSTEM_PROMPT}] + list(messages)
+    # O servidor e a fonte da memoria: historico em disco + fatos lembrados.
+    system = SYSTEM_PROMPT + _memory_prompt()
+    convo = [{"role": "system", "content": system}] + _load_memory()["history"] + [
+        {"role": "user", "content": user_text}
+    ]
     steps: list[dict] = []
     usage_total = {}
 
@@ -204,9 +309,11 @@ async def chat(request: Request):
             content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             action = _parse_action(content)
 
-            # Conversa normal: devolve o texto.
+            # Conversa normal: devolve o texto e persiste o turno.
             if action is None or action["action"] == "reply":
-                return {"reply": action["text"] if action else content, "steps": steps, "usage": usage_total}
+                reply = action["text"] if action else content
+                _save_turn(user_text, reply)
+                return {"reply": reply, "steps": steps, "usage": usage_total}
 
             # Executa a ferramenta escolhida e realimenta o modelo com o resultado real.
             step = await _dispatch(action, loop)
@@ -214,11 +321,9 @@ async def chat(request: Request):
             convo.append({"role": "assistant", "content": content})
             convo.append({"role": "user", "content": _format_tool_output(step)})
 
-        return {
-            "reply": "Limite de execucoes atingido nesta mensagem.",
-            "steps": steps,
-            "usage": usage_total,
-        }
+        reply = "Limite de execucoes atingido nesta mensagem."
+        _save_turn(user_text, reply)
+        return {"reply": reply, "steps": steps, "usage": usage_total}
     except urllib.error.URLError as exc:
         return JSONResponse(
             {"error": f"llama-server indisponivel em {LLAMA_URL}: {exc}"}, status_code=502
@@ -376,6 +481,10 @@ def _parse_action(content: str) -> dict | None:
             return {"action": "read", "path": str(obj.get("path", ""))}
         if action == "list":
             return {"action": "list", "path": str(obj.get("path", "."))}
+        if action == "remember":
+            return {"action": "remember", "text": str(obj.get("text", ""))}
+        if action == "forget":
+            return {"action": "forget", "text": str(obj.get("text", ""))}
         if action == "reply":
             return {"action": "reply", "text": str(obj.get("text", ""))}
 
@@ -416,6 +525,16 @@ async def _dispatch(action: dict, loop) -> dict:
         return {"kind": "list", "ok": res["ok"], "path": action["path"],
                 "stdout": listing, "stderr": res.get("error", ""),
                 "code": f"list {action['path']}", "lang": "file", "exit_code": 0 if res["ok"] else 1}
+    if kind == "remember":
+        res = await loop.run_in_executor(None, _remember, action["text"])
+        return {"kind": "remember", "ok": res["ok"], "stdout": res.get("info", ""),
+                "stderr": res.get("error", ""), "code": f"remember: {action['text']}",
+                "lang": "memory", "exit_code": 0 if res["ok"] else 1}
+    if kind == "forget":
+        res = await loop.run_in_executor(None, _forget, action["text"])
+        return {"kind": "forget", "ok": res["ok"], "stdout": res.get("info", ""),
+                "stderr": res.get("error", ""), "code": f"forget: {action['text']}",
+                "lang": "memory", "exit_code": 0 if res["ok"] else 1}
     return {"kind": kind, "ok": False, "stdout": "", "stderr": f"acao desconhecida: {kind}",
             "code": kind, "lang": kind, "exit_code": 1}
 
