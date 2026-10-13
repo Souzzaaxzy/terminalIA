@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#020a05">
+<title>terminalIA</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<style>
+  :root{
+    --bg:#020a05; --bg2:#04140b; --panel:#04170d; --line:#0c3a22;
+    --fg:#33ff88; --fg-dim:#1c8a4c; --accent:#00e676; --warn:#ffcc33; --err:#ff5c5c;
+    --glow:0 0 6px rgba(51,255,136,.55);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:"SFMono-Regular",ui-monospace,"JetBrains Mono",Consolas,"Courier New",monospace;
+    font-size:14px; line-height:1.5; overflow:hidden;
+    -webkit-text-size-adjust:100%;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:9999; opacity:.35;
+    background:repeating-linear-gradient(180deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.35) 2px 3px);
+  }
+  body::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:9998;
+    background:radial-gradient(ellipse at 50% 40%,rgba(0,230,118,.06),transparent 70%);
+  }
+  #app{display:flex; flex-direction:column; height:100dvh}
+
+  header{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:8px 12px; border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#041a0e,#020a05); position:relative; z-index:5;
+  }
+  .brand{font-weight:700; letter-spacing:1px; text-shadow:var(--glow)}
+  .brand span{color:var(--fg-dim)}
+  .blink{animation:blink 1.05s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .status{margin-left:auto; display:flex; align-items:center; gap:6px; font-size:12px; color:var(--fg-dim)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--err);box-shadow:0 0 8px var(--err)}
+  .dot.ok{background:var(--accent);box-shadow:0 0 8px var(--accent)}
+  .dot.down{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+
+  nav{display:flex; border-bottom:1px solid var(--line); background:var(--bg2); position:relative; z-index:4}
+  nav button{
+    flex:1; padding:11px 8px; background:none; border:0; color:var(--fg-dim);
+    font:inherit; font-weight:600; letter-spacing:1px; cursor:pointer; border-bottom:2px solid transparent;
+  }
+  nav button[aria-selected="true"]{color:var(--fg); border-bottom-color:var(--accent); text-shadow:var(--glow)}
+  nav button:active{background:#062015}
+
+  main{flex:1; min-height:0; position:relative}
+  .pane{position:absolute; inset:0; display:none; flex-direction:column; min-height:0}
+  .pane.active{display:flex}
+
+  /* ---------- Chat ---------- */
+  #chat-log{flex:1; min-height:0; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px}
+  .msg{max-width:92%; padding:8px 11px; border:1px solid var(--line); border-radius:8px; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere}
+  .msg.user{align-self:flex-end; background:#062015; border-color:#0f4a2b}
+  .msg.bot{align-self:flex-start; background:#03110a}
+  .msg.sys{align-self:center; color:var(--fg-dim); border-style:dashed; font-size:12px; max-width:100%}
+  .msg .who{display:block; font-size:11px; color:var(--fg-dim); margin-bottom:3px; letter-spacing:1px}
+  .msg.user .who{color:#7fffb0}
+  .msg.err{border-color:var(--err); color:#ffb3b3}
+
+  .composer{display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); background:var(--bg2)}
+  .composer textarea{
+    flex:1; resize:none; min-height:44px; max-height:130px; padding:10px;
+    background:#02100a; color:var(--fg); border:1px solid var(--line); border-radius:8px;
+    font:inherit; outline:none;
+  }
+  .composer textarea:focus{border-color:var(--accent); box-shadow:var(--glow)}
+  .btn{
+    padding:0 16px; background:var(--accent); color:#00170c; border:0; border-radius:8px;
+    font:inherit; font-weight:700; cursor:pointer; letter-spacing:1px;
+  }
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .btn.ghost{background:transparent; color:var(--fg); border:1px solid var(--line); font-weight:600; padding:0 12px}
+
+  /* ---------- Terminal ---------- */
+  #term-wrap{flex:1; min-height:0; padding:8px; background:#020a05}
+  #term{width:100%; height:100%}
+  .xterm-viewport::-webkit-scrollbar{width:8px}
+  .xterm-viewport::-webkit-scrollbar-thumb{background:#0f4a2b; border-radius:4px}
+
+  .hint{padding:6px 12px; font-size:11px; color:var(--fg-dim); border-top:1px solid var(--line); background:var(--bg2)}
+
+  /* ---------- Login ---------- */
+  #login{position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center;
+        background:radial-gradient(ellipse at 50% 35%,#04170d,#010603 75%)}
+  #login.hidden{display:none}
+  .card{width:min(92vw,360px); border:1px solid var(--line); border-radius:12px; background:#03110a;
+        padding:20px; box-shadow:0 0 30px rgba(0,230,118,.15)}
+  .card h1{margin:0 0 4px; font-size:18px; letter-spacing:1px; text-shadow:var(--glow)}
+  .card p{margin:0 0 16px; font-size:12px; color:var(--fg-dim)}
+  .card label{display:block; font-size:11px; color:var(--fg-dim); margin:10px 0 4px; letter-spacing:1px}
+  .card input{width:100%; padding:11px; background:#02100a; color:var(--fg); border:1px solid var(--line);
+              border-radius:8px; font:inherit; outline:none}
+  .card input:focus{border-color:var(--accent); box-shadow:var(--glow)}
+  .card .btn{width:100%; margin-top:16px; height:44px}
+  .card .err{color:var(--err); font-size:12px; min-height:16px; margin-top:8px}
+
+  @media (max-width:600px){
+    body{font-size:13px}
+    .brand{font-size:15px}
+    .msg{max-width:100%}
+    .btn{padding:0 12px}
+  }
+</style>
+</head>
+<body>
+<div id="login">
+  <form class="card" id="login-form" autocomplete="off">
+    <h1>terminalIA</h1>
+    <p>autenticação básica necessária para acessar a IA e o terminal</p>
+    <label for="lg-user">USUÁRIO</label>
+    <input id="lg-user" name="username" autocomplete="username" autocapitalize="off" spellcheck="false">
+    <label for="lg-pass">SENHA</label>
+    <input id="lg-pass" name="password" type="password" autocomplete="current-password">
+    <button class="btn" type="submit">ENTRAR</button>
+    <div class="err" id="lg-err"></div>
+  </form>
+</div>
+
+<div id="app">
+  <header>
+    <div class="brand">root@terminalIA<span>:</span>~<span class="blink">_</span></div>
+    <div class="status"><span class="dot" id="model-dot"></span><span id="model-txt">modelo: verificando...</span></div>
+  </header>
+
+  <nav>
+    <button id="tab-chat" aria-selected="true">[ CHAT ]</button>
+    <button id="tab-term" aria-selected="false">[ TERMINAL ]</button>
+  </nav>
+
+  <main>
+    <section class="pane active" id="pane-chat">
+      <div id="chat-log"></div>
+      <div class="composer">
+        <textarea id="chat-input" rows="1" placeholder="fale com a IA local... (Enter envia, Shift+Enter quebra linha)"></textarea>
+        <button class="btn" id="send">ENVIAR</button>
+      </div>
+      <div class="hint">inferência local via llama.cpp &middot; sem APIs externas</div>
+    </section>
+
+    <section class="pane" id="pane-term">
+      <div id="term-wrap"><div id="term"></div></div>
+      <div class="hint">shell Linux real no servidor &middot; protegido por autenticação básica</div>
+    </section>
+  </main>
+</div>
+
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/xterm-addon-fit.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  // ---------------- Autenticacao ----------------
+  // A casca (HTML/CSS/JS) e publica; a API e o WebSocket exigem basic auth.
+  // Guardamos a credencial na sessao e a reenviamos em cada requisicao.
+  let AUTH = sessionStorage.getItem("tia_auth") || "";
+
+  // base64url: evita caracteres que nao sao permitidos em subprotocolo WebSocket.
+  function b64url(str){
+    return btoa(unescape(encodeURIComponent(str)))
+      .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  }
+
+  function authHeaders(){
+    return AUTH ? {"Authorization": "Basic " + AUTH} : {};
+  }
+
+  function showLogin(msg){
+    document.getElementById("login").classList.remove("hidden");
+    document.getElementById("lg-err").textContent = msg || "";
+  }
+  function hideLogin(){
+    document.getElementById("login").classList.add("hidden");
+  }
+
+  document.getElementById("login-form").addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const u = document.getElementById("lg-user").value.trim();
+    const p = document.getElementById("lg-pass").value;
+    if(!u){ document.getElementById("lg-err").textContent = "informe o usuário"; return; }
+    const token = b64url(u + ":" + p);
+    try{
+      const r = await fetch("/api/health", {headers:{"Authorization":"Basic " + token}, cache:"no-store"});
+      if(r.status === 401){ document.getElementById("lg-err").textContent = "usuário ou senha inválidos"; return; }
+      if(!r.ok){ document.getElementById("lg-err").textContent = "falha ao conectar (" + r.status + ")"; return; }
+    }catch(err){ document.getElementById("lg-err").textContent = "erro de rede: " + err.message; return; }
+    AUTH = token; sessionStorage.setItem("tia_auth", AUTH);
+    document.getElementById("lg-pass").value = "";
+    hideLogin();
+    boot();
+  });
+
+  let booted = false;
+  function boot(){
+    if(booted) return; booted = true;
+
+  // ---------------- Tabs ----------------
+  const tabChat = document.getElementById("tab-chat");
+  const tabTerm = document.getElementById("tab-term");
+  const paneChat = document.getElementById("pane-chat");
+  const paneTerm = document.getElementById("pane-term");
+  let termStarted = false;
+
+  function select(which){
+    const chat = which === "chat";
+    tabChat.setAttribute("aria-selected", chat);
+    tabTerm.setAttribute("aria-selected", !chat);
+    paneChat.classList.toggle("active", chat);
+    paneTerm.classList.toggle("active", !chat);
+    if(!chat){ startTerminal(); }
+  }
+  tabChat.addEventListener("click", ()=>select("chat"));
+  tabTerm.addEventListener("click", ()=>select("term"));
+
+  // ---------------- Health ----------------
+  const dot = document.getElementById("model-dot");
+  const modelTxt = document.getElementById("model-txt");
+  async function pollHealth(){
+    try{
+      const r = await fetch("/api/health", {headers: authHeaders(), cache:"no-store"});
+      if(r.status === 401){ dot.className="dot down"; modelTxt.textContent="sessão expirada"; showLogin("sessão expirada, entre novamente"); return; }
+      const d = await r.json();
+      if(d.model === "ok"){ dot.className="dot ok"; modelTxt.textContent="modelo: online"; }
+      else { dot.className="dot down"; modelTxt.textContent="modelo: carregando..."; }
+    }catch(e){ dot.className="dot down"; modelTxt.textContent="modelo: offline"; }
+  }
+  pollHealth(); setInterval(pollHealth, 5000);
+
+  // ---------------- Chat ----------------
+  const log = document.getElementById("chat-log");
+  const input = document.getElementById("chat-input");
+  const send = document.getElementById("send");
+  const history = [];
+
+  function bubble(cls, who, text){
+    const el = document.createElement("div");
+    el.className = "msg " + cls;
+    const w = document.createElement("span"); w.className="who"; w.textContent = who;
+    el.appendChild(w);
+    el.appendChild(document.createTextNode(text));
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  bubble("sys","terminalIA","conexão local estabelecida. digite sua mensagem.");
+
+  async function ask(){
+    const text = input.value.trim();
+    if(!text || send.disabled) return;
+    input.value=""; input.style.height="auto";
+    bubble("user","voce", text);
+    history.push({role:"user", content:text});
+    send.disabled = true; send.textContent="...";
+    const pending = bubble("bot","ia","pensando▌");
+    try{
+      const r = await fetch("/api/chat", {
+        method:"POST", headers: Object.assign({"Content-Type":"application/json"}, authHeaders()),
+        body: JSON.stringify({messages: history})
+      });
+      if(r.status === 401){ showLogin("sessão expirada, entre novamente"); throw new Error("não autorizado"); }
+      if(!r.ok){ throw new Error("HTTP " + r.status); }
+      const d = await r.json();
+      const reply = d.reply || "(resposta vazia)";
+      pending.textContent=""; 
+      const w = document.createElement("span"); w.className="who"; w.textContent="ia";
+      pending.appendChild(w); pending.appendChild(document.createTextNode(reply));
+      history.push({role:"assistant", content: reply});
+    }catch(e){
+      pending.className = "msg bot err";
+      pending.textContent = "";
+      const w = document.createElement("span"); w.className="who"; w.textContent="erro";
+      pending.appendChild(w); pending.appendChild(document.createTextNode("falha ao consultar o modelo: " + e.message));
+      history.pop();
+    }finally{
+      send.disabled=false; send.textContent="ENVIAR"; input.focus();
+      log.scrollTop = log.scrollHeight;
+    }
+  }
+  send.addEventListener("click", ask);
+  input.addEventListener("keydown", (e)=>{
+    if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); ask(); }
+  });
+  input.addEventListener("input", ()=>{
+    input.style.height="auto"; input.style.height=Math.min(input.scrollHeight,130)+"px";
+  });
+
+  // ---------------- Terminal ----------------
+  let term=null, fit=null, ws=null, ping=null;
+
+  function wsAuthSubprotocol(){
+    // Navegadores nao enviam o header Authorization no WebSocket.
+    // Enviamos "basic.<base64(user:pass)>" como subprotocolo e o servidor valida.
+    const stored = sessionStorage.getItem("tia_auth") || "";
+    return "basic." + stored;
+  }
+
+  function startTerminal(){
+    if(termStarted) { if(fit){ try{fit.fit();}catch(e){} } return; }
+    termStarted = true;
+
+    term = new Terminal({
+      cursorBlink:true, convertEol:false, scrollback:2000, fontFamily:"monospace", fontSize:13,
+      theme:{ background:"#020a05", foreground:"#33ff88", cursor:"#33ff88", selectionBackground:"#0f4a2b" }
+    });
+    fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById("term"));
+    fit.fit();
+
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(proto + "://" + location.host + "/ws/terminal", wsAuthSubprotocol());
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => {
+      term.writeln("\x1b[1;32m*** terminalIA ***\x1b[0m shell conectado");
+      sendResize();
+    };
+    ws.onmessage = (ev) => {
+      const data = typeof ev.data === "string" ? ev.data : new Uint8Array(ev.data);
+      term.write(data);
+    };
+    ws.onclose = (ev) => {
+      term.writeln(ev.code === 4401
+        ? "\x1b[1;31m*** autenticação recusada ***\x1b[0m"
+        : "\x1b[1;33m*** conexão encerrada ***\x1b[0m");
+    };
+    ws.onerror = () => { term.writeln("\x1b[1;31m*** erro de conexão ***\x1b[0m"); };
+
+    term.onData((d)=>{ if(ws.readyState===1) ws.send(JSON.stringify({t:"i", d:d})); });
+    term.onResize(()=>sendResize());
+    window.addEventListener("resize", ()=>{ if(fit && paneTerm.classList.contains("active")){ fit.fit(); } });
+
+    ping = setInterval(()=>{ if(ws.readyState===1) sendResize(); }, 20000);
+  }
+
+  function sendResize(){
+    if(ws && ws.readyState===1){
+      ws.send(JSON.stringify({t:"r", rows:term.rows, cols:term.cols}));
+    }
+  }
+  } // fim de boot()
+
+  // ---------------- Inicializacao ----------------
+  if(AUTH){
+    // valida a credencial guardada antes de liberar a interface
+    fetch("/api/health", {headers: authHeaders(), cache:"no-store"})
+      .then((r)=>{
+        if(r.ok){ hideLogin(); boot(); }
+        else { sessionStorage.removeItem("tia_auth"); AUTH=""; showLogin(""); }
+      })
+      .catch(()=>{ hideLogin(); boot(); }); // offline: deixa a UI tentar mesmo assim
+  } else {
+    showLogin("");
+  }
+})();
+</script>
+</body>
+</html>
