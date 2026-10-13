@@ -3,7 +3,7 @@
 Página única de **chat**, responsiva, com a aparência nativa do painel OpenHands
 (Agent Canvas). Reúne:
 
-- **Chat** com um modelo **Llama 3.2 3B Uncensored (GGUF)** rodando **100% local** via [llama.cpp](https://github.com/ggml-org/llama.cpp). Sem APIs externas de inferência e sem chaves de provedores.
+- **Chat** com um modelo **Dolphin 3.0 Llama 3.1 8B** (uncensored, GGUF) rodando **100% local** via [llama.cpp](https://github.com/ggml-org/llama.cpp). Sem APIs externas de inferência e sem chaves de provedores.
 - **Agente que escreve e executa código** em Python, JavaScript e Node.js de verdade no servidor, durante a conversa (skill via *function calling* com JSON restrito). Também instala pacotes (pip/npm) e manipula arquivos do workspace.
 - **Autenticação básica** protegendo a API e o agente.
 
@@ -37,27 +37,39 @@ executado e sua saída.
 e o código roda nesse mesmo diretório — então `write` + `run` funcionam juntos. Caminhos são
 confinados ao workspace (`../` é rejeitado). Pacotes pip/npm são instalados no ambiente do servidor.
 
-**Importante sobre a quantização:** a escolha do quant muda tudo. Com **Q2_K** o modelo é rápido e
-leve, mas degrada demais o raciocínio e frequentemente escreve código errado ou ignora o protocolo.
-Com **Q4_K_M** (padrão do `start.sh`, ~2 GB) o agente executa corretamente. Testado:
+## Modelo
 
-| Pedido | Q4_K_M | Q2_K |
-|--------|--------|------|
-| `2**10` em Python | ✅ `1024` | ✅ (simples) |
+Padrão: **Dolphin 3.0 Llama 3.1 8B** (`Q4_K_M`, ~4.6 GB), do repo
+[`bartowski/Dolphin3.0-Llama3.1-8B-GGUF`](https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF).
+É *uncensored por fine-tune* (sem recusas), bom em código e **tool calling** — casa com o protocolo
+do agente. Testado neste projeto:
+
+| Pedido | Dolphin 3.0 8B | Llama 3.2 3B Q2_K (antigo) |
+|--------|----------------|----------------------------|
+| `2**10` em Python | ✅ `1024` (autocorrigiu o código) | ✅ (simples) |
 | quadrados em JavaScript | ✅ `1 4 9` | ❌ código inválido |
-| versão do Node | ✅ `v24.21.0` | ❌ alucinou valor |
+| criar arquivo + listar | ✅ funcionou | ⚠️ irregular |
+| `pip install` + usar | ✅ funcionou | ⚠️ irregular |
+| pedido criativo/"sem filtro" | ✅ responde direto | ✅ |
 
-Para economizar disco/RAM você ainda pode usar `MODEL_QUANT=Q2_K`, aceitando essas limitações.
+A escolha do quant importa: o antigo **Q2_K** (1.3 GB) era rápido mas degradava o raciocínio. Para
+trocar de modelo sem editar código:
+
+```bash
+export MODEL_FILE=/workspace/models/outro.gguf
+export MODEL_URL="https://huggingface.co/<repo>/resolve/main/<arquivo>.gguf"
+bash scripts/start.sh
+```
 
 ## Requisitos
 
 - Linux com Python 3.10+, `git`, `gcc/g++`, `make`, `wget`.
-- ~2 GB em disco para o modelo Q4_K_M (ou ~1.3 GB com `MODEL_QUANT=Q2_K`) e ~1.5 GB para compilar o llama.cpp.
-- **CPU apenas** (não é necessário GPU). O modelo roda em ~3 GB de RAM (Q4_K_M) ou ~2 GB (Q2_K).
+- ~4.6 GB em disco para o modelo e ~1.5 GB para compilar o llama.cpp.
+- **CPU apenas** (não é necessário GPU). O Dolphin 8B Q4_K_M roda em ~6 GB de RAM.
 
-> Observação sobre recursos: validado em um ambiente com **4 vCPU / 15 GB**, onde o modelo carrega em
-> poucos segundos e gera a ~12–16 tokens/s em CPU. O Codespaces padrão (2-core / 8 GB) também
-> executa. Se faltar RAM, reduza o contexto (`LLAMA_CTX`) ou use um quant menor.
+> Observação sobre recursos: validado em um ambiente com **4 vCPU / 15 GB**, onde o Dolphin 8B carrega
+> em ~12 s e gera a ~6–16 tokens/s em CPU. Se faltar RAM, reduza o contexto (`LLAMA_CTX`) ou use um
+> modelo/quant menor.
 
 ## Como rodar
 
@@ -71,7 +83,7 @@ O script, de forma idempotente:
 
 1. instala o `cmake` (pip ou apt) se faltar;
 2. clona e compila o `llama.cpp` (target `llama-server`);
-3. baixa o `model-Q2_K.gguf` do Hugging Face;
+3. baixa o `dolphin3-8b-Q4_K_M.gguf` do Hugging Face;
 4. sobe o `llama-server` em `127.0.0.1:8080`;
 5. sobe o site em `0.0.0.0:12000`.
 
