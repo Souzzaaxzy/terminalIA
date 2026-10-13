@@ -7,8 +7,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK_DIR:-$(dirname "$ROOT")}"          # diretorio de trabalho (fora do repo)
 LLAMA_DIR="${LLAMA_DIR:-$WORK/llama.cpp}"
 MODELS_DIR="${MODELS_DIR:-$WORK/models}"
-MODEL_FILE="${MODEL_FILE:-$MODELS_DIR/model-Q2_K.gguf}"
-MODEL_URL="${MODEL_URL:-https://huggingface.co/lemuralabs/Llama-3.2-3B-Uncensored-GGUF/resolve/main/model-Q2_K.gguf}"
+# Quantizacao do modelo. Q4_K_M e o padrao: o Q2_K e menor, mas degrada demais o
+# raciocinio e a "skill" de codigo do agente. Troque com MODEL_QUANT=Q2_K etc.
+MODEL_QUANT="${MODEL_QUANT:-Q4_K_M}"
+MODEL_FILE="${MODEL_FILE:-$MODELS_DIR/model-$MODEL_QUANT.gguf}"
+MODEL_URL="${MODEL_URL:-https://huggingface.co/lemuralabs/Llama-3.2-3B-Uncensored-GGUF/resolve/main/model-$MODEL_QUANT.gguf}"
 
 PORT="${PORT:-12000}"
 LLAMA_PORT="${LLAMA_PORT:-8080}"

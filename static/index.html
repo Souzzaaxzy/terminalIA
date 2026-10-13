@@ -67,6 +67,13 @@
   .msg.user .who{color:#7fffb0}
   .msg.err{border-color:var(--err); color:#ffb3b3}
 
+  /* bloco de codigo executado pelo agente */
+  .code-step{margin:8px 0; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#010603}
+  .code-step-head{padding:4px 8px; font-size:11px; color:#7fffb0; background:#062015; border-bottom:1px solid var(--line); letter-spacing:.5px}
+  .code-step pre{margin:0; padding:8px; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; font:inherit; font-size:12.5px; color:#c8ffe0}
+  .code-step-out{color:var(--fg) !important; border-top:1px dashed var(--line)}
+  .code-step-out.err{color:#ff9b9b !important}
+
   .composer{display:flex; gap:8px; padding:10px; border-top:1px solid var(--line); background:var(--bg2)}
   .composer textarea{
     flex:1; resize:none; min-height:44px; max-height:130px; padding:10px;
@@ -253,6 +260,32 @@
     return el;
   }
 
+  // Bloco de codigo executado pelo agente (linguagem + saida real).
+  function codeBlock(step){
+    const box = document.createElement("div");
+    box.className = "code-step";
+    const head = document.createElement("div");
+    head.className = "code-step-head";
+    const status = step.timed_out ? "timeout" : ("exit " + step.exit_code);
+    head.textContent = "$ " + step.lang + "  [" + status + "]";
+    const pre = document.createElement("pre");
+    pre.textContent = step.code;
+    box.appendChild(head); box.appendChild(pre);
+    if(step.stdout){
+      const o = document.createElement("pre");
+      o.className = "code-step-out";
+      o.textContent = step.stdout.replace(/\n$/,"");
+      box.appendChild(o);
+    }
+    if(step.stderr){
+      const e = document.createElement("pre");
+      e.className = "code-step-out err";
+      e.textContent = step.stderr.replace(/\n$/,"");
+      box.appendChild(e);
+    }
+    return box;
+  }
+
   bubble("sys","terminalIA","conexão local estabelecida. digite sua mensagem.");
 
   async function ask(){
@@ -272,9 +305,12 @@
       if(!r.ok){ throw new Error("HTTP " + r.status); }
       const d = await r.json();
       const reply = d.reply || "(resposta vazia)";
-      pending.textContent=""; 
+      pending.textContent="";
       const w = document.createElement("span"); w.className="who"; w.textContent="ia";
-      pending.appendChild(w); pending.appendChild(document.createTextNode(reply));
+      pending.appendChild(w);
+      // mostra cada execucao de codigo feita pelo agente, com a saida real
+      (d.steps || []).forEach((s)=>pending.appendChild(codeBlock(s)));
+      pending.appendChild(document.createTextNode(reply));
       history.push({role:"assistant", content: reply});
     }catch(e){
       pending.className = "msg bot err";
