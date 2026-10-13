@@ -19,10 +19,11 @@ navegador (celular/desktop)
 - ~1.3 GB livres em disco para o modelo Q2_K e ~1.5 GB para compilar o llama.cpp.
 - **CPU apenas** (não é necessário GPU). O modelo Q2_K roda em ~2 GB de RAM.
 
-> Observação sobre recursos: o Codespaces padrão (2 vCPU / 4 GB) já executa o Q2_K. Este projeto foi
-> validado em um ambiente com **4 vCPU / 15 GB**, onde o modelo carrega em ~2 s e responde em poucos
-> segundos por mensagem. Se a máquina tiver menos de ~2 GB de RAM livre, reduza o contexto
-> (`LLAMA_CTX`) ou use um quant ainda menor (`TQ1_0`/`TQ2_0`) do mesmo repositório.
+> Observação sobre recursos: o modelo Q2_K (~1.3 GB) cabe com folga no Codespaces padrão
+> (2-core / 8 GB de RAM). Este projeto foi validado em um ambiente com **4 vCPU / 15 GB**, onde o
+> modelo carrega em ~2 s e responde em poucos segundos por mensagem (~12-16 tokens/s em CPU). Se a
+> máquina tiver menos de ~2 GB de RAM livre, reduza o contexto (`LLAMA_CTX`) ou use um quant ainda
+> menor (`TQ1_0`/`TQ2_0`) do mesmo repositório.
 
 ## Como rodar
 
