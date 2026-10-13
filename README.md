@@ -1,16 +1,15 @@
 # terminalIA
 
-Página única, responsiva e com tema *terminal hacker* que reúne:
+Página única de **chat**, responsiva, com a aparência nativa do painel OpenHands
+(Agent Canvas). Reúne:
 
 - **Chat** com um modelo **Llama 3.2 3B Uncensored (GGUF)** rodando **100% local** via [llama.cpp](https://github.com/ggml-org/llama.cpp). Sem APIs externas de inferência e sem chaves de provedores.
-- **Agente que escreve e executa código** em Python, JavaScript e Node.js de verdade no servidor, durante a conversa (skill via *function calling* com JSON restrito).
-- **Terminal Linux real** no servidor, acessível pelo navegador do celular (xterm.js + WebSocket + pty).
-- **Autenticação básica** protegendo a IA e o terminal.
+- **Agente que escreve e executa código** em Python, JavaScript e Node.js de verdade no servidor, durante a conversa (skill via *function calling* com JSON restrito). Também instala pacotes (pip/npm) e manipula arquivos do workspace.
+- **Autenticação básica** protegendo a API e o agente.
 
 ```
 navegador (celular/desktop)
         |  HTTP  /api/chat  -->  server.py  -->  llama-server (llama.cpp, local)
-        |  WS    /ws/terminal -> server.py  -->  pty (/bin/bash)
         +  HTTP  /           -->  static/index.html
 ```
 
@@ -99,27 +98,27 @@ Variáveis aceitas pelo `server.py`:
 
 ## Segurança
 
-- `/api/*` e `/ws/*` exigem `Authorization: Basic ...`. A casca estática é pública apenas para que o
-  frontend possa coletar as credenciais.
-- O WebSocket não recebe o header `Authorization` no handshake do navegador; por isso a credencial
-  viaja em um **subprotocolo** `basic.<base64url(user:pass)>`, validado no servidor.
-- Para expor na internet, use HTTPS e uma senha forte. O terminal dá acesso a um shell real no host.
+- `/api/*` exigem `Authorization: Basic ...`. A casca estática é pública apenas para que o frontend
+  possa coletar as credenciais.
+- O agente executa código e instala pacotes **no próprio servidor**. As ferramentas de arquivo são
+  confinadas a `agent_home/` (caminhos com `../` são rejeitados), mas `pip`/`npm` instalam no
+  ambiente do servidor.
+- Para expor na internet, use HTTPS e uma senha forte: quem entra pode rodar código no host.
 
 ## Endpoints
 
-| Método | Rota            | Descrição                                   |
-|--------|-----------------|---------------------------------------------|
-| `GET`  | `/`             | página única (chat + terminal)              |
-| `POST` | `/api/chat`     | `{messages:[...]}` -> resposta do modelo    |
-| `GET`  | `/api/health`   | estado do site e do modelo                  |
-| `WS`   | `/ws/terminal`  | shell Linux (autenticado)                   |
+| Método | Rota          | Descrição                                    |
+|--------|---------------|----------------------------------------------|
+| `GET`  | `/`           | página única de chat (responsiva)            |
+| `POST` | `/api/chat`   | `{messages:[...]}` -> resposta do agente     |
+| `GET`  | `/api/health` | estado do site e do modelo                   |
 
 ## Estrutura
 
 ```
-server.py            backend FastAPI (chat proxy + terminal WS + basic auth)
-static/index.html    página única (chat + terminal, tema hacker, responsiva)
-static/vendor/       xterm.js + addon-fit (vendorizados, sem CDN em runtime)
+server.py            backend FastAPI (agente + ferramentas + basic auth)
+static/index.html    página única de chat (aparência nativa OpenHands, responsiva)
+static/favicon.svg   ícone
 scripts/start.sh     instalação e inicialização
 ```
 

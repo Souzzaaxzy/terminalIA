@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""terminalIA - chat local (llama.cpp) + terminal Linux web, com autenticacao basica.
+"""terminalIA - chat com agente local (llama.cpp) e autenticacao basica.
 
 Servicos:
-  - Chat:      POST /api/chat        -> proxy para o llama-server local (sem APIs externas)
-  - Terminal:  WS   /ws/terminal     -> pty Linux real (xterm.js no frontend)
-  - Estaticos: GET  /                -> single page responsiva (tema hacker)
+  - Chat:      POST /api/chat   -> agente local (run/pip/npm/write/read/list/reply)
+  - Saude:     GET  /api/health -> estado do site e do modelo
+  - Estaticos: GET  /           -> pagina unica de chat, responsiva
 
 Variaveis de ambiente:
   PORT           porta HTTP do site          (padrao 12000)
@@ -12,25 +12,20 @@ Variaveis de ambiente:
   LLAMA_URL      base do llama-server        (padrao http://127.0.0.1:8080)
   BASIC_USER     usuario do basic auth       (padrao admin)
   BASIC_PASS     senha do basic auth         (padrao terminalia)
+  WORKSPACE_ROOT raiz do workspace do agente (padrao: pasta do projeto)
 """
 
 import asyncio
 import base64
-import fcntl
 import json
 import os
-import pty
 import re
 import secrets
-import signal
-import struct
 import subprocess
-import tempfile
-import termios
 import urllib.error
 import urllib.request
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -147,10 +142,9 @@ def _unauthorized() -> Response:
     )
 
 
-# Protegemos a API e o terminal. A casca HTML/CSS/JS e publica para que o
-# frontend possa coletar as credenciais e repassa-las ao WebSocket (que nao
-# recebe o header Authorization pelo handshake do navegador).
-PROTECTED_PREFIXES = ("/api/", "/ws/")
+# Protegemos a API. A casca HTML/CSS/JS e publica para que o frontend possa
+# coletar as credenciais e envia-las em cada chamada de API.
+PROTECTED_PREFIXES = ("/api/",)
 
 
 @app.middleware("http")
@@ -461,101 +455,6 @@ async def health():
     except Exception:
         ok = False
     return {"web": "ok", "model": "ok" if ok else "down", "llama_url": LLAMA_URL}
-
-
-# --------------------------------------------------------------------------- #
-# Terminal: shell Linux real via pty + WebSocket
-# --------------------------------------------------------------------------- #
-SHELL = os.environ.get("SHELL", "/bin/bash")
-
-
-async def _pump_to_ws(fd: int, ws: WebSocket) -> None:
-    loop = asyncio.get_running_loop()
-    while True:
-        try:
-            data = await loop.run_in_executor(None, os.read, fd, 4096)
-        except OSError:
-            break
-        if not data:
-            break
-        await ws.send_bytes(data)
-
-
-def _ws_subprotocol(ws: WebSocket) -> str | None:
-    """Retorna o subprotocolo 'basic.<base64url(user:pass)>' valido, se houver.
-
-    O navegador nao permite definir o header Authorization no handshake do
-    WebSocket, entao as credenciais viajam no subprotocolo (o servidor precisa
-    ecoar exatamente o valor ofertado para concluir o handshake).
-    """
-    offered = [p.strip() for p in ws.headers.get("sec-websocket-protocol", "").split(",") if p.strip()]
-    for proto in offered:
-        if proto.startswith("basic."):
-            creds = _decode_basic(proto[len("basic."):])
-            if creds and _valid_credentials(*creds):
-                return proto
-    return None
-
-
-@app.websocket("/ws/terminal")
-async def terminal_ws(ws: WebSocket):
-    proto = _ws_subprotocol(ws)
-    if proto is None and not _check_auth(ws.headers.get("authorization")):
-        await ws.close(code=4401)
-        return
-
-    # Ecoa o subprotocolo ofertado (exigencia do protocolo WebSocket) ou "basic".
-    await ws.accept(subprotocol=proto or "basic")
-
-    # Fork de um shell conectado a um pty novo.
-    pid, fd = pty.fork()
-    if pid == 0:  # processo filho -> executa o shell
-        os.environ["TERM"] = "xterm-256color"
-        os.environ["PS1"] = "\\[\\e[1;32m\\]terminalIA\\[\\e[0m\\]:\\w\\$ "
-        os.execvp(SHELL, [SHELL, "-i"])
-        os._exit(1)
-
-    # Processo pai -> ajusta tamanho inicial do pty.
-    try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    except OSError:
-        pass
-
-    reader = asyncio.create_task(_pump_to_ws(fd, ws))
-    try:
-        while True:
-            msg = await ws.receive_text()
-            try:
-                evt = json.loads(msg)
-            except json.JSONDecodeError:
-                continue
-            if evt.get("t") == "i":  # input do usuario
-                os.write(fd, evt.get("d", "").encode("utf-8", "ignore"))
-            elif evt.get("t") == "r":  # resize
-                try:
-                    fcntl.ioctl(
-                        fd,
-                        termios.TIOCSWINSZ,
-                        struct.pack("HHHH", int(evt["rows"]), int(evt["cols"]), 0, 0),
-                    )
-                except (OSError, KeyError, ValueError):
-                    pass
-    except WebSocketDisconnect:
-        pass
-    finally:
-        reader.cancel()
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.waitpid(pid, 0)
-        except OSError:
-            pass
 
 
 # --------------------------------------------------------------------------- #
