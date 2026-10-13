@@ -42,40 +42,59 @@ BASIC_PASS = os.environ.get("BASIC_PASS", "terminalia")
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-# Instrui o modelo a usar a ferramenta de execucao de codigo (skill do agente).
-# A saida e restringida por JSON schema (decodificacao guiada), o que torna o
-# protocolo confiavel mesmo com um modelo quantizado pequeno (Q2_K).
-SYSTEM_PROMPT = """Voce e o terminalIA, um agente que roda 100% local via llama.cpp.
-Voce responde SEMPRE com um objeto JSON, em uma das duas acoes:
+# Raiz do agente: os arquivos do agente e o diretorio de trabalho do codigo.
+WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", os.path.dirname(STATIC_DIR))
+AGENT_HOME = os.path.join(WORKSPACE_ROOT, "agent_home")
+AGENT_FILES = os.path.join(AGENT_HOME, "files")
+os.makedirs(AGENT_FILES, exist_ok=True)
 
-1) "run"  -> executa codigo de verdade no servidor (python, javascript ou nodejs)
+# Instrui o modelo a usar as ferramentas do agente.
+# A saida e restringida por JSON schema (decodificacao guiada), o que torna o
+# protocolo confiavel mesmo com um modelo quantizado pequeno.
+SYSTEM_PROMPT = """Voce e o terminalIA, um agente que roda 100% local via llama.cpp.
+Voce responde SEMPRE com um objeto JSON. Escolha uma acao:
+
+1) "run" -> executa codigo no servidor (python, javascript ou nodejs)
    {"action":"run","lang":"python","code":"print(2**10)"}
 
-2) "reply" -> conversa normal, sem executar codigo
+2) "pip" -> instala pacotes Python com pip
+   {"action":"pip","packages":"requests"}
+
+3) "npm" -> instala pacotes Node com npm
+   {"action":"npm","packages":"lodash"}
+
+4) "write" -> cria/sobrescreve um arquivo no workspace
+   {"action":"write","path":"dados.txt","content":"ola mundo"}
+
+5) "read" -> le um arquivo do workspace
+   {"action":"read","path":"dados.txt"}
+
+6) "list" -> lista arquivos do workspace (path opcional)
+   {"action":"list","path":"."}
+
+7) "reply" -> conversa normal
    {"action":"reply","text":"sua resposta"}
 
-Use "run" SEMPRE que o usuario pedir para calcular, contar, testar, gerar,
-transformar ou rodar codigo. Nao invente resultados: rode o codigo.
-Depois de um "run", o sistema devolve a saida real e voce responde com "reply".
-
-Exemplos:
-Usuario: quanto e 2 elevado a 10?
-{"action":"run","lang":"python","code":"print(2**10)"}
-(sistema devolve stdout: 1024)
-{"action":"reply","text":"2 elevado a 10 e 1024."}
-
-Usuario: ola, tudo bem?
-{"action":"reply","text":"Ola! Tudo bem. Como posso ajudar?"}
-
-Regras: lang deve ser "python", "javascript" ou "nodejs". Responda no idioma do usuario."""
+Regras:
+- Use "run" SEMPRE que precisar calcular, contar, testar, gerar ou rodar codigo.
+- Se o codigo precisar de um pacote que talvez nao esteja instalado (ex.: requests,
+  cowsay, numpy, lodash), chame "pip" (python) ou "npm" (node) PRIMEIRO, em uma
+  resposta separada, e so depois use "run". Nunca assuma que o pacote ja existe.
+- Use "write"/"read"/"list" para criar e manipular arquivos do workspace.
+- Nao invente resultados: execute e use a saida real. Uma acao por resposta.
+- "lang" deve ser "python", "javascript" ou "nodejs".
+- Responda no idioma do usuario, de forma direta e curta."""
 
 # Schema que restringe a saida do modelo a um objeto JSON valido.
 TOOL_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["run", "reply"]},
+        "action": {"type": "string", "enum": ["run", "pip", "npm", "write", "read", "list", "reply"]},
         "lang": {"type": "string", "enum": ["python", "javascript", "nodejs"]},
         "code": {"type": "string"},
+        "packages": {"type": "string"},
+        "path": {"type": "string"},
+        "content": {"type": "string"},
         "text": {"type": "string"},
     },
     "required": ["action"],
@@ -195,19 +214,11 @@ async def chat(request: Request):
             if action is None or action["action"] == "reply":
                 return {"reply": action["text"] if action else content, "steps": steps, "usage": usage_total}
 
-            # Executa o codigo pedido pelo agente.
-            lang = action["lang"]
-            code = action["code"]
-            if not code.strip():
-                return {"reply": "O agente pediu para executar codigo vazio.", "steps": steps, "usage": usage_total}
-
-            run = await loop.run_in_executor(None, _run_code, lang, code, CODE_TIMEOUT)
-            run.update({"lang": lang, "code": code})
-            steps.append(run)
-
-            # Realimenta o modelo com a saida real do codigo.
+            # Executa a ferramenta escolhida e realimenta o modelo com o resultado real.
+            step = await _dispatch(action, loop)
+            steps.append(step)
             convo.append({"role": "assistant", "content": content})
-            convo.append({"role": "user", "content": _format_tool_output(run)})
+            convo.append({"role": "user", "content": _format_tool_output(step)})
 
         return {
             "reply": "Limite de execucoes atingido nesta mensagem.",
@@ -241,7 +252,7 @@ def _run_code(lang: str, code: str, timeout: int) -> dict:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
-            cwd=tempfile.gettempdir(),
+            cwd=AGENT_HOME,  # o codigo roda onde o agente cria/le arquivos
         )
         return {
             "stdout": proc.stdout[:CODE_MAX_OUTPUT].decode("utf-8", "replace"),
@@ -256,6 +267,85 @@ def _run_code(lang: str, code: str, timeout: int) -> dict:
             "exit_code": None,
             "timed_out": True,
         }
+
+
+# --------------------------------------------------------------------------- #
+# Ferramentas de arquivo (sandbox no workspace do agente)
+# --------------------------------------------------------------------------- #
+def _safe_path(rel: str) -> str | None:
+    """Resolve um caminho relativo dentro do workspace; None se escapar."""
+    rel = (rel or ".").strip().lstrip("/\\")
+    target = os.path.realpath(os.path.join(AGENT_HOME, rel))
+    root = os.path.realpath(AGENT_HOME)
+    if target != root and not target.startswith(root + os.sep):
+        return None
+    return target
+
+
+def _tool_write(path: str, content: str) -> dict:
+    target = _safe_path(path)
+    if target is None:
+        return {"ok": False, "error": "caminho fora do workspace"}
+    os.makedirs(os.path.dirname(target) or AGENT_HOME, exist_ok=True)
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return {"ok": True, "info": f"arquivo gravado: {os.path.relpath(target, AGENT_HOME)} ({len(content)} bytes)"}
+
+
+def _tool_read(path: str) -> dict:
+    target = _safe_path(path)
+    if target is None:
+        return {"ok": False, "error": "caminho fora do workspace"}
+    if not os.path.isfile(target):
+        return {"ok": False, "error": f"arquivo nao encontrado: {path}"}
+    with open(target, "r", encoding="utf-8", errors="replace") as fh:
+        return {"ok": True, "content": fh.read(CODE_MAX_OUTPUT)}
+
+
+def _tool_list(path: str) -> dict:
+    target = _safe_path(path)
+    if target is None:
+        return {"ok": False, "error": "caminho fora do workspace"}
+    if not os.path.isdir(target):
+        return {"ok": False, "error": f"diretorio nao encontrado: {path}"}
+    entries = []
+    for name in sorted(os.listdir(target)):
+        full = os.path.join(target, name)
+        entries.append(f"{name}/" if os.path.isdir(full) else name)
+    return {"ok": True, "entries": entries or ["(vazio)"]}
+
+
+# --------------------------------------------------------------------------- #
+# Ferramentas de instalacao de pacotes (pip / npm)
+# --------------------------------------------------------------------------- #
+def _tool_pip(packages: str) -> dict:
+    pkgs = [p for p in re.split(r"[\s,]+", packages.strip()) if p]
+    if not pkgs:
+        return {"ok": False, "error": "nenhum pacote informado"}
+    proc = subprocess.run(
+        ["pip", "install", "--quiet", "--disable-pip-version-check", *pkgs],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300,
+    )
+    return {
+        "ok": proc.returncode == 0,
+        "info": proc.stdout[:CODE_MAX_OUTPUT].decode("utf-8", "replace").strip()
+        or ("pacotes instalados: " + " ".join(pkgs)),
+    }
+
+
+def _tool_npm(packages: str) -> dict:
+    pkgs = [p for p in re.split(r"[\s,]+", packages.strip()) if p]
+    if not pkgs:
+        return {"ok": False, "error": "nenhum pacote informado"}
+    proc = subprocess.run(
+        ["npm", "install", "--no-audit", "--no-fund", *pkgs],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300, cwd=AGENT_HOME,
+    )
+    return {
+        "ok": proc.returncode == 0,
+        "info": proc.stdout[:CODE_MAX_OUTPUT].decode("utf-8", "replace").strip()
+        or ("pacotes instalados: " + " ".join(pkgs)),
+    }
 
 
 _LANG_ALIASES = {
@@ -284,6 +374,14 @@ def _parse_action(content: str) -> dict | None:
         action = str(obj.get("action", "")).lower()
         if action == "run":
             return {"action": "run", "lang": _normalize_lang(obj.get("lang")), "code": str(obj.get("code", ""))}
+        if action in ("pip", "npm"):
+            return {"action": action, "packages": str(obj.get("packages", ""))}
+        if action == "write":
+            return {"action": "write", "path": str(obj.get("path", "")), "content": str(obj.get("content", ""))}
+        if action == "read":
+            return {"action": "read", "path": str(obj.get("path", ""))}
+        if action == "list":
+            return {"action": "list", "path": str(obj.get("path", "."))}
         if action == "reply":
             return {"action": "reply", "text": str(obj.get("text", ""))}
 
@@ -293,37 +391,63 @@ def _parse_action(content: str) -> dict | None:
     return None
 
 
-def _format_tool_output(run: dict) -> str:
-    """Monta a mensagem devolvida ao modelo com a saida real do codigo."""
-    if run["timed_out"]:
-        return (
-            f"RESULTADO DA EXECUCAO: timeout de {CODE_TIMEOUT}s, o codigo nao terminou.\n"
-            'Responda com {"action":"run", ...} com um codigo mais rapido, ou explique a falha em "reply".'
-        )
-    parts = [f"RESULTADO DA EXECUCAO (exit_code={run['exit_code']}):"]
-    if run["stdout"]:
-        parts.append("stdout:\n" + run["stdout"].rstrip())
-    if run["stderr"]:
-        parts.append("stderr:\n" + run["stderr"].rstrip())
-    if not run["stdout"] and not run["stderr"]:
-        parts.append("(sem saida)")
-    if run["exit_code"] == 0 and not run["stdout"] and not run["stderr"]:
-        parts.append(
-            "O codigo rodou mas NAO imprimiu nada. Adicione print(...) (Python) ou "
-            'console.log(...) (JS/Node) e responda com {"action":"run", ...} de novo. '
-            "Nunca invente um valor que voce nao viu na saida."
-        )
-    elif run["exit_code"] == 0:
-        parts.append(
-            'Agora responda ao usuario com {"action":"reply","text":"..."} usando SOMENTE a saida real '
-            "acima (nao invente valores), no idioma da mensagem do usuario."
-        )
+async def _dispatch(action: dict, loop) -> dict:
+    """Executa a ferramenta pedida pelo agente e devolve um passo normalizado."""
+    kind = action["action"]
+    if kind == "run":
+        run = await loop.run_in_executor(None, _run_code, action["lang"], action["code"], CODE_TIMEOUT)
+        run.update({"kind": "run", "lang": action["lang"], "code": action["code"]})
+        return run
+    if kind == "pip":
+        res = await loop.run_in_executor(None, _tool_pip, action["packages"])
+        return {"kind": "pip", "ok": res["ok"], "stdout": res.get("info", ""), "stderr": res.get("error", ""),
+                "code": f"pip install {action['packages']}", "lang": "pip", "exit_code": 0 if res["ok"] else 1}
+    if kind == "npm":
+        res = await loop.run_in_executor(None, _tool_npm, action["packages"])
+        return {"kind": "npm", "ok": res["ok"], "stdout": res.get("info", ""), "stderr": res.get("error", ""),
+                "code": f"npm install {action['packages']}", "lang": "npm", "exit_code": 0 if res["ok"] else 1}
+    if kind == "write":
+        res = await loop.run_in_executor(None, _tool_write, action["path"], action["content"])
+        return {"kind": "write", "ok": res["ok"], "path": action["path"],
+                "stdout": res.get("info", ""), "stderr": res.get("error", ""),
+                "code": f"write {action['path']}", "lang": "file", "exit_code": 0 if res["ok"] else 1}
+    if kind == "read":
+        res = await loop.run_in_executor(None, _tool_read, action["path"])
+        return {"kind": "read", "ok": res["ok"], "path": action["path"],
+                "stdout": res.get("content", ""), "stderr": res.get("error", ""),
+                "code": f"read {action['path']}", "lang": "file", "exit_code": 0 if res["ok"] else 1}
+    if kind == "list":
+        res = await loop.run_in_executor(None, _tool_list, action["path"])
+        listing = "\n".join(res.get("entries", [])) if res["ok"] else ""
+        return {"kind": "list", "ok": res["ok"], "path": action["path"],
+                "stdout": listing, "stderr": res.get("error", ""),
+                "code": f"list {action['path']}", "lang": "file", "exit_code": 0 if res["ok"] else 1}
+    return {"kind": kind, "ok": False, "stdout": "", "stderr": f"acao desconhecida: {kind}",
+            "code": kind, "lang": kind, "exit_code": 1}
+
+
+def _format_tool_output(step: dict) -> str:
+    """Monta a mensagem devolvida ao modelo com o resultado real da ferramenta."""
+    kind = step.get("kind", "run")
+    ok = step.get("exit_code") == 0
+    head = f"RESULTADO ({kind}, exit_code={step.get('exit_code')}):"
+    body = []
+    if step.get("stdout"):
+        body.append("stdout:\n" + step["stdout"].rstrip())
+    if step.get("stderr"):
+        body.append("stderr:\n" + step["stderr"].rstrip())
+    if not body:
+        body.append("(sem saida)")
+
+    if not ok:
+        advice = f"A ferramenta {kind} falhou. Corrija e chame a ferramenta de novo, ou explique a falha com reply."
+    elif kind == "run" and not step.get("stdout") and not step.get("stderr"):
+        advice = ('O codigo rodou mas NAO imprimiu nada. Adicione print(...)/console.log(...) e chame "run" '
+                  "de novo. Nunca invente um valor que voce nao viu na saida.")
     else:
-        parts.append(
-            'O codigo falhou. Corrija o erro e responda com {"action":"run", ...} de novo, '
-            "ou explique a falha com {\"action\":\"reply\", ...}."
-        )
-    return "\n".join(parts)
+        advice = ('Agora responda ao usuario com {"action":"reply","text":"..."} usando SOMENTE o resultado '
+                  "real acima (nao invente valores), no idioma do usuario.")
+    return "\n".join([head, *body, advice])
 
 
 @app.get("/api/health")

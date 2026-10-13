@@ -6,3 +6,6 @@ venv/
 models/
 *.log
 .DS_Store
+
+# workspace do agente (arquivos criados em runtime)
+agent_home/

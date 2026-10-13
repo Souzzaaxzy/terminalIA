@@ -267,7 +267,8 @@
     const head = document.createElement("div");
     head.className = "code-step-head";
     const status = step.timed_out ? "timeout" : ("exit " + step.exit_code);
-    head.textContent = "$ " + step.lang + "  [" + status + "]";
+    const tool = step.kind && step.kind !== "run" ? step.kind : step.lang;
+    head.textContent = "$ " + tool + "  [" + status + "]";
     const pre = document.createElement("pre");
     pre.textContent = step.code;
     box.appendChild(head); box.appendChild(pre);

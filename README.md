@@ -14,19 +14,29 @@ navegador (celular/desktop)
         +  HTTP  /           -->  static/index.html
 ```
 
-## A skill de código do agente
+## As ferramentas do agente
 
-O agente não só mostra código: ele **executa** Python, JavaScript e Node.js no servidor e usa a
-saída real para responder. O protocolo é a *function calling* do llama.cpp com **JSON restrito por
-schema** (`response_format: json_schema`), o que torna o comportamento confiável:
+O agente não só mostra código: ele **executa** de verdade no servidor e usa o resultado real para
+responder. O protocolo é a *function calling* do llama.cpp com **JSON restrito por schema**
+(`response_format: json_schema`), o que torna o comportamento confiável. Ferramentas disponíveis:
 
-```json
-{"action":"run","lang":"python","code":"print(2**10)"}   -> executa
-{"action":"reply","text":"2 elevado a 10 é 1024."}       -> conversa
-```
+| Ação    | Exemplo de resposta do modelo                                            | O que faz                                   |
+|---------|--------------------------------------------------------------------------|---------------------------------------------|
+| `run`   | `{"action":"run","lang":"python","code":"print(2**10)"}`                 | executa código (python/javascript/nodejs)   |
+| `pip`   | `{"action":"pip","packages":"requests"}`                                 | instala pacotes Python                      |
+| `npm`   | `{"action":"npm","packages":"lodash"}`                                   | instala pacotes Node                        |
+| `write` | `{"action":"write","path":"dados.txt","content":"ola"}`                  | cria/sobrescreve arquivo no workspace       |
+| `read`  | `{"action":"read","path":"dados.txt"}`                                   | lê arquivo do workspace                     |
+| `list`  | `{"action":"list","path":"."}`                                           | lista arquivos do workspace                 |
+| `reply` | `{"action":"reply","text":"2 elevado a 10 é 1024."}`                     | conversa normal                             |
 
-Fluxo: o modelo decide `run` → o backend executa (timeout 20s) → devolve stdout/stderr ao modelo →
-o modelo responde com `reply`. O site mostra cada bloco executado e sua saída.
+Fluxo: o modelo escolhe uma ferramenta → o backend executa (timeout 20s; instalações até 300s) →
+devolve o resultado real ao modelo → o modelo responde com `reply`. O site mostra cada passo
+executado e sua saída.
+
+**Workspace do agente:** as ferramentas de arquivo operam em `agent_home/` (ao lado do repositório),
+e o código roda nesse mesmo diretório — então `write` + `run` funcionam juntos. Caminhos são
+confinados ao workspace (`../` é rejeitado). Pacotes pip/npm são instalados no ambiente do servidor.
 
 **Importante sobre a quantização:** a escolha do quant muda tudo. Com **Q2_K** o modelo é rápido e
 leve, mas degrada demais o raciocínio e frequentemente escreve código errado ou ignora o protocolo.
